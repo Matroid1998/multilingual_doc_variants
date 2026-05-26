@@ -50,11 +50,36 @@ def semantic_preserved(
     rewritten_text: str,
     original_term: str,
     swap_term: str,
+    *,
+    intent: str = "translation",
 ) -> bool:
+    """Verify the rewrite preserves the original meaning UP TO the single term substitution.
+
+    `intent` describes what kind of substitution was made so the verifier doesn't conflate
+    a deliberately-noisy term (variant D) with a meaning change:
+      - "translation" : swap_term is a different-language equivalent of original_term
+      - "perturbation": swap_term is a same-language orthographic noise version of original_term
+      - "noun_swap"   : swap_term is a translation of a non-chemistry noun
+    """
+    intent_clause = {
+        "translation": (
+            "The rewrite intentionally substitutes one chemistry term with its equivalent term in "
+            "another language. The rest of the passage stays in the original language."
+        ),
+        "perturbation": (
+            "The rewrite intentionally introduces orthographic noise (a typo, hyphenation, case noise, "
+            "or similar) into a single chemistry term, in the same language as the rest of the passage. "
+            "The noisy term should still be recognizable as referring to the same concept."
+        ),
+        "noun_swap": (
+            "The rewrite intentionally substitutes a single non-chemistry common noun with its "
+            "equivalent in another language; the rest of the passage stays in the original language."
+        ),
+    }.get(intent, "The rewrite intentionally substitutes one term.")
     system = (
         "You are a careful bilingual editor. You will be shown an ORIGINAL passage and a REWRITTEN passage. "
-        "The rewrite intentionally substitutes one term with a translation. Decide whether the rewrite preserves the "
-        "meaning of the original UP TO this single term substitution. Reply with exactly YES or NO on the first line."
+        f"{intent_clause} Decide whether the rewrite preserves the meaning of the original UP TO this "
+        "single substitution. Reply with exactly YES or NO on the first line."
     )
     user = (
         f"ORIGINAL TERM: {original_term}\n"

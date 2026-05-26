@@ -29,27 +29,30 @@ from .llm import LLMClient
 from .mention_picker import pick_mention
 from .positions import compute_position_ranges
 from .select_rows import qualifying_source_rows, sample_source_rows
-from .variants.b_in_set import pick_swap_lang_in_set, resolve_swap_term as b_swap_term
-from .variants.c_out_of_set import pick_swap_lang_out_of_set, resolve_swap_term as c_swap_term
-from .variants.d_noisy import perturb
-from .variants.e_control import pick_noun_outside_mentions, translate_noun
+from .variants.b_in_set import parallel_context_snippet, pick_swap_lang_in_set
+from .variants.c_out_of_set import pick_swap_lang_out_of_set
+from .variants.e_control import pick_noun_outside_mentions
 from .verify import round_trip, semantic_preserved, source_term_absent_at_swap, term_presence_offset
 
 
 POSITIONS = ("title", "first_sentence", "body")
 
-# Refuse swap terms that are too short or look like common single-letter abbreviations —
-# they collide with high-frequency vocabulary (e.g., French "or" = gold but also a conjunction).
+# Refuse swap terms that are too short to disambiguate. Latin-script terms need ≥3 chars
+# (avoids collisions like French "or"/"gold" with the conjunction "or"); CJK terms can be
+# shorter since one ideograph often encodes a whole concept.
 MIN_SWAP_TERM_LEN = 3
+MIN_SWAP_TERM_LEN_CJK = 2
 
 
 def _is_usable_swap(term: str | None) -> bool:
     if not term:
         return False
     s = term.strip()
-    if len(s) < MIN_SWAP_TERM_LEN:
+    if not s:
         return False
-    return True
+    has_cjk = any("一" <= ch <= "鿿" for ch in s)
+    min_len = MIN_SWAP_TERM_LEN_CJK if has_cjk else MIN_SWAP_TERM_LEN
+    return len(s) >= min_len
 
 
 # --- helpers --------------------------------------------------------------
@@ -93,11 +96,10 @@ def _index_links_by_pub(links_df: pl.DataFrame) -> dict[str, list[dict]]:
     return out
 
 
-# --- LLM grammar-cleanup prompt ------------------------------------------
-# We perform the substitution deterministically (single occurrence at the chosen
-# offset), then ask the model only to adjust grammar around the inserted term.
-# This avoids the LLM accidentally replacing other occurrences or breaking word
-# boundaries.
+# --- LLM-driven swap-term generation -------------------------------------
+# For every variant in {B, C, D, E}: the LLM generates the substitute term
+# (given the whole document as context + a variant-specific rule), and the
+# pipeline does the deterministic splice at the chosen offset.
 
 
 def _deterministic_substitute(text: str, start: int, end: int, swap_term: str) -> tuple[str, int]:
@@ -105,30 +107,46 @@ def _deterministic_substitute(text: str, start: int, end: int, swap_term: str) -
     return text[:start] + swap_term + text[end:], start
 
 
-def _cleanup_prompt(text: str, original: str, swap: str, swap_offset: int, src_lang: str, swap_lang: str) -> tuple[str, str]:
-    # Give the model a short window around the substitution to focus its edits
-    win = 200
-    lo = max(0, swap_offset - win)
-    hi = min(len(text), swap_offset + len(swap) + win)
-    context_window = text[lo:hi]
-    system = (
-        f"The passage below is in {src_lang}. A single chemistry term has just been substituted with a "
-        f"{swap_lang}-language term: '{swap}' (at character offset {swap_offset}, replacing the original "
-        f"'{original}'). The rest of the passage is intact. "
-        "Your task: return the passage with ONLY the minimum grammatical adjustments around the inserted "
-        f"'{swap}' (article agreement, gender/number/case agreement, declension, light reordering) so the "
-        "sentence reads well. Keep the inserted term EXACTLY as given (do not translate it back, do not "
-        "change spelling or capitalization). Do not change anything outside the immediate sentence "
-        "containing the inserted term. Do not remove or add content. Return ONLY the full passage, "
-        "no commentary, no markdown, no quoting."
+# --- per-variant rule clauses --------------------------------------------
+
+
+def _rule_clause_b(src_lang: str, swap_lang: str) -> str:
+    return (
+        f"Translate this chemistry term from {src_lang} to {swap_lang}. "
+        f"The document has a parallel translation in {swap_lang} — use the exact form a chemist "
+        f"or patent author would use in {swap_lang} scientific text. "
+        f"Return only the {swap_lang} term, nothing else."
     )
-    user = (
-        f"INSERTED TERM (must remain exactly): {swap}\n"
-        f"ORIGINAL TERM (now removed): {original}\n"
-        f"SENTENCE WINDOW for reference: ...{context_window}...\n\n"
-        f"FULL PASSAGE (already substituted; return with grammar fixed):\n{text}\n"
+
+
+def _rule_clause_c(src_lang: str, swap_lang: str) -> str:
+    return (
+        f"Translate this chemistry term from {src_lang} to {swap_lang}. "
+        f"This document is NOT translated into {swap_lang} — pick the standard chemistry term "
+        f"used in {swap_lang} scientific literature. "
+        f"Return only the {swap_lang} term, nothing else."
     )
-    return system, user
+
+
+def _rule_clause_d(src_lang: str) -> str:
+    return (
+        f"Produce an orthographically NOISY (perturbed) version of this chemistry term, in the "
+        f"SAME language ({src_lang}). You MUST apply at least one perturbation; returning the "
+        f"original term unchanged is NOT acceptable. Pick ONE perturbation from this list and "
+        f"apply it: (a) insert a hyphen at a non-trivial position (e.g. 'catalyst' -> 'cata-lyst'); "
+        f"(b) drop one vowel ('cobalt' -> 'cblt'); (c) swap two adjacent letters ('catalyst' -> "
+        f"'cataylst'); (d) randomize letter case ('cobalt' -> 'CoBalT'); (e) swap a Greek letter "
+        f"for its ASCII name ('α-tocopherol' -> 'alpha-tocopherol'); (f) swap an oxidation-state "
+        f"notation ('Fe(III)' -> 'Fe3+'). The result must still be recognizable as the same term, "
+        f"but MUST differ from the original. Return only the perturbed form."
+    )
+
+
+def _rule_clause_e(src_lang: str, swap_lang: str) -> str:
+    return (
+        f"Translate this non-chemistry common noun from {src_lang} to {swap_lang}. "
+        f"Return only the translated noun, no article, no extra words."
+    )
 
 
 # --- per-variant builders ------------------------------------------------
@@ -155,7 +173,7 @@ def _emit_a_clean(src) -> dict:
     }
 
 
-def _do_llm_rewrite_and_verify(
+def _substitute_and_verify(
     client: LLMClient,
     src,
     swap_lang: str,
@@ -164,36 +182,43 @@ def _do_llm_rewrite_and_verify(
     original_start: int,
     original_end: int,
     rejections: Counter,
-) -> tuple[str, int, bool] | None:
-    """Returns (rewrite_text, swap_offset, round_trip_flag) or None on rejection.
+    *,
+    run_round_trip: bool = True,
+    intent: str = "translation",
+) -> tuple[str, int, bool | None] | None:
+    """Splice the swap term in deterministically, then run verification.
 
-    Substitution is fully deterministic: text[original_start:original_end] -> swap_term.
-    This avoids the LLM's tendency to also substitute other occurrences of the source term.
-    Verification (semantic preservation, round-trip) still uses LLM calls.
+    Returns (rewrite_text, swap_offset, round_trip_flag) or None on rejection.
+    The swap term is whatever the LLM produced upstream (per _emit_* helpers);
+    here we only validate it and splice it.
     """
-    rewrite, deterministic_offset = _deterministic_substitute(
+    if not _is_usable_swap(swap_term):
+        rejections["swap_term_unusable"] += 1
+        return None
+    if swap_term.casefold() == (original_term or "").casefold():
+        rejections["swap_equals_original"] += 1
+        return None
+    rewrite, _ = _deterministic_substitute(
         src.text, original_start, original_end, swap_term
     )
-    # Term-presence check still matters: catches cases where swap_term coincidentally
-    # appears elsewhere in the doc, which would break downstream "find the swap" logic.
+    # Term-presence: swap_term must appear exactly once in the rewrite.
     swap_offset = term_presence_offset(rewrite, swap_term)
     if swap_offset is None:
         rejections["term_presence"] += 1
         return None
-    # source-term-absence at the swap site is true by construction of the deterministic
-    # substitution; skip that check here.
-    if not semantic_preserved(client, src.text, rewrite, original_term, swap_term):
+    if not semantic_preserved(client, src.text, rewrite, original_term, swap_term, intent=intent):
         rejections["semantic_preservation"] += 1
         return None
-    rt_ok = round_trip(client, rewrite, swap_term, swap_lang, src.language, original_term)
-    return rewrite, swap_offset, (not rt_ok)
+    if run_round_trip:
+        rt_ok = round_trip(client, rewrite, swap_term, swap_lang, src.language, original_term)
+        return rewrite, swap_offset, (not rt_ok)
+    return rewrite, swap_offset, None
 
 
 def _emit_b(
     src,
     position: str,
     field_texts: dict[str, str],
-    kg: dict[str, dict],
     links_by_pub: dict[str, list[dict]],
     corpus_freq: Counter,
     client: LLMClient,
@@ -218,13 +243,18 @@ def _emit_b(
     if mention is None:
         return None
     cid = mention["chebi_id"]
-    kg_row = kg.get(cid)
-    swap_term, kg_fallback = b_swap_term(cid, swap_lang, parallel_mentions, kg_row)
-    fallback = fallback or kg_fallback
-    if not _is_usable_swap(swap_term):
-        return None
 
-    result = _do_llm_rewrite_and_verify(
+    # LLM generates the swap term, grounded by the parallel-translation snippet when available.
+    extra_ctx = parallel_context_snippet(cid, parallel)
+    swap_term = client.generate_swap_term(
+        doc_text=src.text,
+        term=mention["surface"],
+        offset=mention["start"],
+        rule_clause=_rule_clause_b(src.language, swap_lang),
+        extra_context=extra_ctx,
+    )
+
+    result = _substitute_and_verify(
         client, src, swap_lang, mention["surface"], swap_term, mention["start"], mention["end"], rejections
     )
     if result is None:
@@ -254,7 +284,6 @@ def _emit_c(
     src,
     position: str,
     field_texts: dict[str, str],
-    kg: dict[str, dict],
     corpus_freq: Counter,
     client: LLMClient,
     seed: int,
@@ -275,11 +304,15 @@ def _emit_c(
     if mention is None:
         return None
     cid = mention["chebi_id"]
-    swap_term = c_swap_term(cid, swap_lang, kg.get(cid))
-    if not _is_usable_swap(swap_term):
-        return None
 
-    result = _do_llm_rewrite_and_verify(
+    swap_term = client.generate_swap_term(
+        doc_text=src.text,
+        term=mention["surface"],
+        offset=mention["start"],
+        rule_clause=_rule_clause_c(src.language, swap_lang),
+    )
+
+    result = _substitute_and_verify(
         client, src, swap_lang, mention["surface"], swap_term, mention["start"], mention["end"], rejections
     )
     if result is None:
@@ -305,7 +338,14 @@ def _emit_c(
     }
 
 
-def _emit_d(src, field_texts: dict[str, str], corpus_freq: Counter, seed: int) -> dict | None:
+def _emit_d(
+    src,
+    field_texts: dict[str, str],
+    corpus_freq: Counter,
+    client: LLMClient,
+    seed: int,
+    rejections: Counter,
+) -> dict | None:
     ranges = compute_position_ranges(
         field_texts["title"], field_texts["abstract"], field_texts["description"],
         field_texts["first_claim"], field_texts["context"], src.language,
@@ -318,13 +358,26 @@ def _emit_d(src, field_texts: dict[str, str], corpus_freq: Counter, seed: int) -
     if mention is None:
         return None
     original = mention["surface"]
-    swap_term = perturb(original, seed=seed + hash(("Dperm", src.id)) % (1 << 30))
-    if swap_term == original or not swap_term:
+
+    swap_term = client.generate_swap_term(
+        doc_text=src.text,
+        term=original,
+        offset=mention["start"],
+        rule_clause=_rule_clause_d(src.language),
+    )
+
+    # D doesn't need a round-trip check (the perturbation is intentionally noisy and
+    # back-translation would mostly succeed anyway). It DOES still run semantic-preservation,
+    # but with intent="perturbation" so the verifier doesn't mistake a typo for a meaning change.
+    result = _substitute_and_verify(
+        client, src, src.language, original, swap_term,
+        mention["start"], mention["end"], rejections,
+        run_round_trip=False,
+        intent="perturbation",
+    )
+    if result is None:
         return None
-    # In-place replacement of THIS occurrence
-    start, end = mention["start"], mention["end"]
-    new_text = src.text[:start] + swap_term + src.text[end:]
-    swap_offset = start
+    rewrite, swap_offset, _ = result
     return {
         "instance_id": f"{src.id}__D_noisy__body",
         "source_row_id": src.id,
@@ -333,7 +386,7 @@ def _emit_d(src, field_texts: dict[str, str], corpus_freq: Counter, seed: int) -
         "source_language": src.language,
         "variant_tag": "D_noisy",
         "position": "body",
-        "text": new_text,
+        "text": rewrite,
         "swap_lang": src.language,
         "original_term": original,
         "swap_term": swap_term,
@@ -378,14 +431,19 @@ def _emit_e(
     style = rng.choice(styles)
     swap_lang = rng.choice(in_set_pool if style == "in_set" else out_set_pool)
 
-    swap_term = translate_noun(client, noun, src.language, swap_lang)
-    if not swap_term or swap_term.casefold() == noun.casefold():
+    swap_term = client.generate_swap_term(
+        doc_text=src.text,
+        term=noun,
+        offset=noun_start,
+        rule_clause=_rule_clause_e(src.language, swap_lang),
+    )
+    if not swap_term:
         rejections["e_no_translation"] += 1
         return None
 
-    # Fluent LLM substitution (same as B/C). Verification reuses presence/absence/semantic.
-    result = _do_llm_rewrite_and_verify(
-        client, src, swap_lang, noun, swap_term, noun_start, noun_end, rejections
+    result = _substitute_and_verify(
+        client, src, swap_lang, noun, swap_term, noun_start, noun_end, rejections,
+        intent="noun_swap",
     )
     if result is None:
         return None
@@ -460,22 +518,22 @@ def build(target: int = BENCH2_TARGET_COUNT, seed: int = RNG_SEED, limit: int | 
 
         for pos in POSITIONS:
             if b_eligible:
-                rec = _emit_b(src, pos, field_texts, kg, links_by_pub, corpus_freq, client, seed, rejections)
+                rec = _emit_b(src, pos, field_texts, links_by_pub, corpus_freq, client, seed, rejections)
                 if rec is None:
                     skips[f"B/{pos}"] += 1
                 else:
                     append_jsonl(IDEA2_INSTANCES_JSONL, rec)
                     written += 1
             if c_eligible:
-                rec = _emit_c(src, pos, field_texts, kg, corpus_freq, client, seed, rejections)
+                rec = _emit_c(src, pos, field_texts, corpus_freq, client, seed, rejections)
                 if rec is None:
                     skips[f"C/{pos}"] += 1
                 else:
                     append_jsonl(IDEA2_INSTANCES_JSONL, rec)
                     written += 1
 
-        # D
-        rec = _emit_d(src, field_texts, corpus_freq, seed)
+        # D — LLM-generated noisy term
+        rec = _emit_d(src, field_texts, corpus_freq, client, seed, rejections)
         if rec is None:
             skips["D/body"] += 1
         else:

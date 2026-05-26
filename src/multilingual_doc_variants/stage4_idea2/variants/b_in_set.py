@@ -1,9 +1,7 @@
-"""Variant B: in-set code-switch (swap one chemistry term into another L_avail language)."""
+"""Variant B: in-set code-switch. Helpers — swap-language picker + parallel-row context."""
 from __future__ import annotations
 
 import random
-
-from ...config import LANGS
 
 
 def pick_swap_lang_in_set(l_avail: set[str], source_lang: str, seed: int) -> str | None:
@@ -13,42 +11,26 @@ def pick_swap_lang_in_set(l_avail: set[str], source_lang: str, seed: int) -> str
     return random.Random(seed).choice(pool)
 
 
-def resolve_swap_term(
+def parallel_context_snippet(
     chebi_id: str,
-    swap_lang: str,
-    parallel_mentions: list[dict] | None,
-    kg_row: dict | None,
-) -> tuple[str | None, bool]:
-    """
-    Returns (term, used_kg_fallback).
-
-    Preference order:
-      1. parallel-row mention surface that matches aliases_chebi[swap_lang][0] (primary ChEBI name)
-      2. any parallel-row surface for the same chebi_id
-      3. wikipedia_titles[swap_lang]
-      4. aliases_chebi[swap_lang][0]   (KG fallback)
-    """
-    if kg_row is None:
-        return None, True
-    aliases_chebi = (kg_row.get("aliases_chebi") or {}).get(swap_lang) or []
-    wiki = (kg_row.get("wikipedia_titles") or {}).get(swap_lang)
-    primary = aliases_chebi[0] if aliases_chebi else None
-
-    if parallel_mentions:
-        parallel_surfaces = [m["surface"] for m in parallel_mentions if m["chebi_id"] == chebi_id]
-        if parallel_surfaces:
-            if primary:
-                for s in parallel_surfaces:
-                    if s.casefold() == primary.casefold():
-                        return s, False
-            if wiki:
-                for s in parallel_surfaces:
-                    if s.casefold() == wiki.casefold():
-                        return s, False
-            return parallel_surfaces[0], False
-    # Fallback to KG
-    if aliases_chebi:
-        return aliases_chebi[0], True
-    if wiki:
-        return wiki, True
-    return None, True
+    parallel_row: dict | None,
+    window: int = 200,
+    max_snippets: int = 2,
+) -> str | None:
+    """Extract up to `max_snippets` short windows around mentions of `chebi_id` in the
+    parallel-language row, so the LLM can see how the term is rendered in the actual
+    translation. Returns a single newline-joined string, or None if no such mentions."""
+    if parallel_row is None:
+        return None
+    text = parallel_row.get("text") or ""
+    mentions = [m for m in (parallel_row.get("mentions") or []) if m.get("chebi_id") == chebi_id]
+    if not mentions:
+        return None
+    snippets: list[str] = []
+    for m in mentions[:max_snippets]:
+        s, e = m["start"], m["end"]
+        lo = max(0, s - window)
+        hi = min(len(text), e + window)
+        snippets.append(text[lo:hi])
+    label = f"PARALLEL-TRANSLATION CONTEXT (the same document in the target language, showing how the term is rendered):\n"
+    return label + "\n---\n".join(snippets)

@@ -39,21 +39,37 @@ def index_corpus_by_chebi(links_rows: Iterable[dict]) -> dict[str, list[dict]]:
     return deduped
 
 
-def gold_documents(cid: str, by_chebi: dict[str, list[dict]]) -> list[dict]:
-    """All corpus docs mentioning cid, with mentions filtered to cid only."""
-    docs: list[dict] = []
-    for row in by_chebi.get(cid, []):
-        offsets = [m for m in (row["mentions"] or []) if m["chebi_id"] == cid]
-        docs.append(
-            {
-                "id": row["id"],
-                "publication_number": row["publication_number"],
-                "language": row["language"],
-                "text": row["text"],
-                "mentions": offsets,
-            }
-        )
-    return docs
+def _doc_payload(row: dict, cid: str) -> dict:
+    offsets = [m for m in (row["mentions"] or []) if m["chebi_id"] == cid]
+    return {
+        "id": row["id"],
+        "publication_number": row["publication_number"],
+        "language": row["language"],
+        "text": row["text"],
+        "mentions": offsets,
+    }
+
+
+def pick_gold_document(
+    cid: str, by_chebi: dict[str, list[dict]], seed: int
+) -> tuple[dict | None, str | None]:
+    """
+    Pick exactly one gold document for `cid`.
+
+    Language is uniformly sampled from the set of languages where `cid` is mentioned;
+    within that language a doc is uniformly sampled. Returns (gold_doc, gold_language).
+    """
+    rows = by_chebi.get(cid) or []
+    if not rows:
+        return None, None
+    rng = random.Random(seed + hash(("gold", cid)) % (1 << 31))
+    by_lang: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_lang[r["language"]].append(r)
+    lang = rng.choice(sorted(by_lang.keys()))
+    candidates = by_lang[lang]
+    rng.shuffle(candidates)
+    return _doc_payload(candidates[0], cid), lang
 
 
 def hard_negatives(
@@ -61,6 +77,8 @@ def hard_negatives(
     neighbor_map: dict[str, tuple[str, ...]],
     by_chebi: dict[str, list[dict]],
     seed: int,
+    *,
+    gold_language: str,
     max_neg: int = HARD_NEG_PER_GOLD,
 ) -> tuple[list[dict], list[dict]]:
     """
@@ -71,13 +89,17 @@ def hard_negatives(
     """
     rng = random.Random(seed + hash(gold_cid) % (1 << 31))
 
-    # Collect candidate (neighbor_cid, doc, relation) triples; doc must not mention gold_cid
+    # Collect candidate (neighbor_cid, doc, relation) triples. Two filters:
+    #   1. doc must not mention gold_cid
+    #   2. doc's language must differ from gold_language (cross-lingual neg by construction)
     pool: list[tuple[str, dict, str]] = []
     used_neighbor_ids: set[str] = set()
     for neighbor_cid, relations in neighbor_map.items():
         if neighbor_cid == gold_cid:
             continue
         for doc in by_chebi.get(neighbor_cid, []):
+            if doc["language"] == gold_language:
+                continue
             if any(m["chebi_id"] == gold_cid for m in (doc["mentions"] or [])):
                 continue
             pool.append((neighbor_cid, doc, relations[0]))

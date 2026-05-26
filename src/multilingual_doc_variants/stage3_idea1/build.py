@@ -16,7 +16,7 @@ from ..config import (
     RNG_SEED,
 )
 from ..io_utils import write_jsonl
-from .hard_negatives import NEIGHBOR_FIELDS, gold_documents, hard_negatives, index_corpus_by_chebi
+from .hard_negatives import NEIGHBOR_FIELDS, hard_negatives, index_corpus_by_chebi, pick_gold_document
 from .select import balanced_sample, qualifying_concepts
 
 
@@ -52,13 +52,25 @@ def build(target: int = BENCH1_TARGET_COUNT, seed: int = RNG_SEED) -> int:
     instances: list[dict] = []
     relation_counts: Counter = Counter()
     neg_lang_counts: Counter = Counter()
+    gold_lang_counts: Counter = Counter()
+    skipped_no_negs = 0
     for cand in chosen:
         kg_row = kg[cand.chebi_id]
-        gold_docs = gold_documents(cand.chebi_id, by_chebi)
+        gold_doc, gold_language = pick_gold_document(cand.chebi_id, by_chebi, seed=seed)
+        if gold_doc is None:
+            continue
+        gold_lang_counts[gold_language] += 1
         neighbor_map = _neighbor_map_for(kg_row)
         neg_docs, used_neighbor_ids = hard_negatives(
-            cand.chebi_id, neighbor_map, by_chebi, seed=seed
+            cand.chebi_id,
+            neighbor_map,
+            by_chebi,
+            seed=seed,
+            gold_language=gold_language,
         )
+        if not neg_docs:
+            skipped_no_negs += 1
+            continue
         for d in neg_docs:
             relation_counts[d["relation"]] += 1
             neg_lang_counts[d["language"]] += 1
@@ -82,7 +94,8 @@ def build(target: int = BENCH1_TARGET_COUNT, seed: int = RNG_SEED) -> int:
                 "chebi_id": cand.chebi_id,
                 "inchikey": kg_row.get("inchikey"),
                 "multilingual_aliases": kg_row.get("aliases_combined") or {lg: [] for lg in LANGS},
-                "gold_documents": gold_docs,
+                "gold_language": gold_language,
+                "gold_document": gold_doc,
                 "hard_negative_documents": neg_docs,
                 "neighbor_concepts": neighbor_concepts,
             }
@@ -93,7 +106,9 @@ def build(target: int = BENCH1_TARGET_COUNT, seed: int = RNG_SEED) -> int:
         "instances_written": n,
         "qualifying_concepts": len(candidates),
         "sample_target": target,
+        "skipped_no_cross_lingual_negs": skipped_no_negs,
         "relation_counts": dict(relation_counts),
+        "gold_doc_languages": dict(gold_lang_counts),
         "negative_doc_languages": dict(neg_lang_counts),
         "seed": seed,
     }

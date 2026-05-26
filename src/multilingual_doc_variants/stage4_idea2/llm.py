@@ -92,3 +92,57 @@ class LLMClient:
         text = resp.choices[0].message.content or ""
         self.cache.put(key, request, text)
         return text
+
+    def generate_swap_term(
+        self,
+        doc_text: str,
+        term: str,
+        offset: int,
+        rule_clause: str,
+        *,
+        extra_context: str | None = None,
+        max_output_tokens: int = 60,
+    ) -> str:
+        """Generate the swap term for any variant (B/C/D/E) using the full document as context.
+
+        The LLM is told (a) the whole document, (b) the exact term to swap and where it sits,
+        (c) the variant-specific rule. It returns ONE LINE: only the substitute term, no
+        quoting, no explanation. The pipeline does the deterministic splice using whatever
+        comes back here.
+        """
+        system = (
+            "You are a precise multilingual chemistry text utility. "
+            "Given a document, a specific term that appears in it (with its character offset), "
+            "and a one-line rule, you output exactly ONE substitute term that fulfills the rule. "
+            "Hard rules: (1) output a single line, no leading or trailing punctuation, no quoting, "
+            "no markdown, no explanation; (2) the output must be just the substitute term itself, "
+            "not a sentence; (3) if the rule asks for a translation, translate only the term — "
+            "do not translate any other words; (4) keep the output as short as possible while "
+            "still being a valid substitute (one word or short multi-word term)."
+        )
+        user_parts = [
+            f"DOCUMENT (source context):\n{doc_text}",
+            "",
+            f"TERM TO SWAP: {term}",
+            f"CHARACTER OFFSET IN DOCUMENT: {offset}",
+            f"RULE: {rule_clause}",
+        ]
+        if extra_context:
+            user_parts.extend(["", extra_context])
+        user_parts.extend([
+            "",
+            "Output the substitute term, and only the substitute term, on a single line.",
+        ])
+        user = "\n".join(user_parts)
+        out = self.complete(
+            system=system,
+            user=user,
+            temperature=0.0,
+            max_output_tokens=max_output_tokens,
+        )
+        # Tidy: keep the first non-empty line, strip surrounding whitespace and stray quotes.
+        for line in (out or "").splitlines():
+            line = line.strip().strip('"').strip("'").strip()
+            if line:
+                return line
+        return ""

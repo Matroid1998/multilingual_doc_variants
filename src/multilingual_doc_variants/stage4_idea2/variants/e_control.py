@@ -57,32 +57,5 @@ def pick_noun_outside_mentions(
     return rng.choice(candidates)
 
 
-_FIXED_VOCAB_OUT_OF_SET = {
-    # tiny seed vocabulary; LLM call augments at runtime then we cache the union
-    ("paper", "en", "de"): "Papier",
-    ("paper", "en", "fr"): "papier",
-    ("paper", "en", "es"): "papel",
-    ("paper", "en", "zh"): "纸",
-    ("year", "en", "de"): "Jahr",
-    ("year", "en", "fr"): "année",
-    ("year", "en", "es"): "año",
-    ("year", "en", "zh"): "年",
-}
-
-
-def fixed_vocab() -> dict[tuple[str, str, str], str]:
-    return dict(_FIXED_VOCAB_OUT_OF_SET)
-
-
-def translate_noun(client, noun: str, source_lang: str, target_lang: str) -> str:
-    cached = _FIXED_VOCAB_OUT_OF_SET.get((noun.lower(), source_lang, target_lang))
-    if cached:
-        return cached
-    system = (
-        f"You translate single common nouns. Translate the user's noun from {source_lang} into {target_lang}. "
-        "Output ONLY the translated word, no punctuation, no explanation."
-    )
-    reply = client.complete(system=system, user=noun, temperature=0.0, max_output_tokens=20).strip()
-    # cache for the process lifetime
-    _FIXED_VOCAB_OUT_OF_SET[(noun.lower(), source_lang, target_lang)] = reply
-    return reply
+# Noun translation is now handled by LLMClient.generate_swap_term in build.py.
+# No fixed-vocab table; the LLM is given the full document for disambiguation.
