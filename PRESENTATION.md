@@ -184,22 +184,22 @@ Two-step process, exactly as the spec calls for:
 
 ---
 
-## Slide 11 — Idea 2 example: patent EP-4635013-A1_en
+## Slide 11 — Idea 2 example: patent EP-4634109-A1_fr
 
-Source: proton-exchange membrane for water electrolysis. `L_avail = {en, fr}`.
+Source: French patent. `L_avail = {en, fr}`. Eight records, all 5 variant types fired.
 
 | variant | position | original → swap | swap lang |
 |---|---|---|---|
 | A_clean | na | — | — |
-| B_in_set | first_sentence | catalyst → catalyseur | fr (in-set) |
-| B_in_set | body | catalyst → catalyseur | fr |
-| C_out_of_set | title | proton → protón | es (out-of-set) |
-| C_out_of_set | body | catalyst → catalizador | es |
-| C_out_of_set | body | catalyst → 催化剂 | zh |
-| D_noisy | body | ion → oin | en (same lang) |
-| E_control | body | rendement → Ertrag | de (non-chem noun) |
+| B_in_set | title | hydrogène → hydrogen | en (in-set) |
+| B_in_set | first_sentence | hydrogène → hydrogen | en |
+| B_in_set | body | hydrogène → hydrogen | en |
+| C_out_of_set | title | hydrogène → hidrógeno | es (out-of-set) |
+| C_out_of_set | first_sentence | hydrogène → hidrógeno | es |
+| D_noisy | body | hydrogène → h-y-drogène | fr (same lang) |
+| E_control | body | ligne → line | en (non-chem noun) |
 
-> Speaker notes: the LLM produced Chinese translations even though ChEBI has zero Chinese chemistry synonyms — that's a key win of using LLM term generation over KG lookup.
+> Speaker notes: same chemistry term ("hydrogène") translated to two different languages, perturbed in source language, plus a non-chemistry control. The deterministic mention picker chose the same offset; only the LLM-generated swap term changed.
 
 ---
 
@@ -257,7 +257,7 @@ mentions  ------+                      |
 - **ChEBI release pinned** via HTTP Last-Modified headers in `data/kg/chebi_raw/release_metadata.json`.
 - **LLM calls content-hashed and cached** to `data/idea2/llm_cache.jsonl` — second runs cost $0.
 - **Stages 1–3** complete end-to-end in **under 15 seconds** on cached ChEBI.
-- **Stage 4** with 50 source rows on gpt-4o-mini: ≈ 10 minutes, well under $1.
+- **Stage 4** with 50 source rows on gpt-4o-mini: **8.7 minutes, 666 cached calls, well under $1**.
 - 11 pytest smoke tests cover full-text concatenation, longest-match dedup, cache key stability, and per-variant prompt sanity.
 
 ---
@@ -269,8 +269,8 @@ mentions  ------+                      |
 | `data/kg/chebi_concepts.parquet` | 1,003 ChEBI concepts + neighbors |
 | `data/corpus/documents_linked.parquet` | 1,110 docs, 9,634 mentions |
 | `data/idea1/instances.jsonl` | 74 Benchmark-1 instances (cross-lingual gold/neg) |
-| `data/idea2/instances.jsonl` | ~180 Benchmark-2 records from 50 source rows |
-| `data/idea2/llm_cache.jsonl` | All LLM calls, content-hashed |
+| `data/idea2/instances.jsonl` | **201 Benchmark-2 records** from 50 source rows |
+| `data/idea2/llm_cache.jsonl` | 666 cached LLM calls (term generation + verification) |
 
 **Command-line interface:**
 
