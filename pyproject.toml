@@ -1,0 +1,35 @@
+[project]
+name = "multilingual-doc-variants"
+version = "0.1.0"
+description = "Four-stage pipeline producing multilingual chemistry retrieval benchmark data from a patent corpus."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "polars>=1.10",
+    "pyarrow>=17",
+    "obonet>=1.1",
+    "networkx>=3.2",
+    "pyahocorasick>=2.1",
+    "httpx>=0.27",
+    "pysbd>=0.3.4",
+    "spacy>=3.7",
+    "openai>=1.50",
+    "tqdm>=4.66",
+    "typer>=0.12",
+    "regex>=2024.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+mdv = "multilingual_doc_variants.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/multilingual_doc_variants"]

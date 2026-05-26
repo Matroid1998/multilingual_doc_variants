@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.env
+
+# uv
+uv.lock
+
+# Data: keep schema directories tracked via .gitkeep but ignore large/derived/cached artifacts
+data/kg/chebi_raw/
+data/kg/chebi_concepts.parquet
+data/kg/wikidata_cache.json
+data/corpus/documents_linked.parquet
+data/idea1/instances.jsonl
+data/idea1/run_summary.json
+data/idea2/instances.jsonl
+data/idea2/llm_cache.jsonl
+data/idea2/run_summary.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
