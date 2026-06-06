@@ -182,3 +182,73 @@ Whether a retriever still recognizes a document when **exactly one term** is
 code-switched into another language (in-set or out-of-set), perturbed, or — as a
 control — when a non-chemistry word is switched instead. Comparing performance
 across A/B/C/D/E isolates *which* kind of variation actually hurts retrieval.
+
+---
+
+## How Wikipedia Could Strengthen Idea 1
+
+Everything in Idea 1 ultimately rests on **multilingual names**: a concept's name
+set is the query, mentions are found by matching those names against the corpus,
+and a concept only qualifies if its names reach enough languages. The knowledge
+graph is the default source of those names — but its coverage is uneven. It is
+rich in some languages (English, German, Spanish, French) and thin in others;
+Chinese coverage in particular is close to empty. Wherever a name is missing in a
+language, that language is invisible to Idea 1.
+
+Wikipedia is a second, independent source of names for the *same* concepts. Every
+concept can be associated with its Wikipedia articles, one per language, and each
+article's title is a name people actually use for that concept in that language.
+Crucially, those titles attach to the concept through its **stable identity** —
+the same identity the knowledge graph uses — so a Chinese Wikipedia title is
+registered as "another name for this exact concept," not as a loose string. This
+means Wikipedia names can be folded into the concept's name set **without
+breaking the shared-identity mechanism** that lets a German mention and a French
+mention point at the same concept. It only widens that net.
+
+Concretely, adding Wikipedia titles would help Idea 1 in four compounding ways.
+
+**1. More concepts clear the qualification bar.**
+Recall that a concept must have names in at least three of the five languages and
+must be mentioned in at least two of them. Concepts that are genuinely
+cross-lingual in the corpus can still *fail* this test purely because the
+knowledge graph lacks their name in a language they appear in — most often
+Chinese. Supplying the missing names from Wikipedia lets those concepts reach the
+language thresholds, enlarging the pool of qualifying concepts and giving the
+balanced sampler more, and more diverse, material to draw from.
+
+**2. The query side becomes fuller and more realistic.**
+The query in Idea 1 *is* the multilingual name set. Knowledge-graph names lean
+toward formal, curated nomenclature; Wikipedia titles tend to be the common,
+everyday names a patent author or a search user would actually type. Folding them
+in makes the query a more honest representation of how the concept is referred to
+in the wild — so the benchmark tests retrieval against realistic phrasing, not
+just canonical chemistry terminology.
+
+**3. Gold documents stop going missing in under-covered languages.**
+Gold documents are exactly the corpus documents that mention the concept, and a
+mention is only found if one of the concept's names matches the text. If a
+Chinese patent uses the everyday Chinese word for a concept but the knowledge
+graph has no Chinese name for it, that mention is never found: the Chinese gold
+document silently drops out, and the concept may even fall below the
+"two-languages" threshold. A Chinese Wikipedia title closes exactly this gap —
+the mention is recognized, the document correctly enters the gold set, and the
+concept's cross-lingual character is restored. Since cross-lingual coverage is
+the entire point of Idea 1, this is the most valuable contribution.
+
+**4. The hard-negative side gets stronger too.**
+Hard negatives come from documents that mention a *neighbor* concept, and a
+neighbor only counts as "present in the corpus" if its own mentions are found.
+The same coverage gaps that hide a target concept also hide its neighbors in
+under-covered languages. Better names for the neighbors mean more neighbor
+documents are detected, which both lets more concepts pass the "at least one
+neighbor present" gate and yields a larger, more varied pool of confusable
+documents to draw hard negatives from.
+
+**The caveat.** Wikipedia names are less precisely scoped than curated chemistry
+names. An article title may be broader or narrower than the exact concept, or be
+a generic word that also appears in non-chemistry contexts. Adding such names
+raises recall but can also introduce false mentions, which would pollute both the
+gold set and the hard-negative set. So Wikipedia is best treated as an *optional
+enrichment*: it most clearly pays off for closing genuine coverage holes (above
+all Chinese), and its benefit must be weighed against the precision cost of the
+noisier names it brings in.
